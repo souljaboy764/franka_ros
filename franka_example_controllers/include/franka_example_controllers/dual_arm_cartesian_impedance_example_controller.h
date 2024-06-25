@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Franka Robotics GmbH
+// Copyright (c) 2019 Franka Emika GmbH
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #pragma once
 
@@ -103,7 +103,9 @@ class DualArmCartesianImpedanceExampleController
   Eigen::Affine3d EEl_T_C_{};
 
   ///< Publisher for the centering tracking frame of the coordinated motion.
-  realtime_tools::RealtimePublisher<geometry_msgs::PoseStamped> center_frame_pub_;
+//   realtime_tools::RealtimePublisher<geometry_msgs::PoseStamped> center_frame_pub_;
+realtime_tools::RealtimePublisher<geometry_msgs::PoseStamped> leftEE_frame_pub_;
+realtime_tools::RealtimePublisher<geometry_msgs::PoseStamped> rightEE_frame_pub_;
   ///< Rate to trigger publishing the current pose of the centering frame.
   franka_hw::TriggerRate publish_rate_;
 
@@ -165,18 +167,23 @@ class DualArmCartesianImpedanceExampleController
 
   ///< Target pose subscriber
   ros::Subscriber sub_target_pose_left_;
+  ros::Subscriber sub_target_pose_right_;
 
   /**
    * Callback method that handles updates of the target poses.
    *
    * @param[in] msg New target pose.
    */
-  void targetPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
+//   void targetPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
+void targetLeftPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
+void targetRightPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
 
   /**
    * Publishes a Pose Stamped for visualization of the current centering pose.
    */
-  void publishCenteringPose();
+//   void publishCenteringPose();
+void publishLeftPose();
+void publishRightPose();
 };
 
 }  // namespace franka_example_controllers
