@@ -115,13 +115,22 @@ bool DualArmCartesianImpedanceExampleController::init(hardware_interface::RobotH
     return false;
   }
 
-  boost::function<void(const geometry_msgs::PoseStamped::ConstPtr&)> callback =
-      boost::bind(&DualArmCartesianImpedanceExampleController::targetPoseCallback, this, _1);
+  boost::function<void(const geometry_msgs::PoseStamped::ConstPtr&)> leftCallback =
+      boost::bind(&DualArmCartesianImpedanceExampleController::targetLeftPoseCallback, this, _1);
+  
+  boost::function<void(const geometry_msgs::PoseStamped::ConstPtr&)> rightCallback =
+      boost::bind(&DualArmCartesianImpedanceExampleController::targetRightPoseCallback, this, _1);
 
-  ros::SubscribeOptions subscribe_options;
-  subscribe_options.init("centering_frame_target_pose", 1, callback);
-  subscribe_options.transport_hints = ros::TransportHints().reliable().tcpNoDelay();
-  sub_target_pose_left_ = node_handle.subscribe(subscribe_options);
+  ros::SubscribeOptions subscribe_options_left;
+  subscribe_options_left.init("left_frame_target_pose", 1, leftCallback);
+  subscribe_options_left.transport_hints = ros::TransportHints().reliable().tcpNoDelay();
+  sub_target_pose_left_ = node_handle.subscribe(subscribe_options_left);
+
+  ros::SubscribeOptions subscribe_options_right;
+  subscribe_options_right.init("right_frame_target_pose", 1, rightCallback);
+  subscribe_options_right.transport_hints = ros::TransportHints().reliable().tcpNoDelay();
+  sub_target_pose_right_ = node_handle.subscribe(subscribe_options_right);
+
 
   std::vector<std::string> right_joint_names;
   if (!node_handle.getParam("right/joint_names", right_joint_names) ||
@@ -168,8 +177,10 @@ bool DualArmCartesianImpedanceExampleController::init(hardware_interface::RobotH
   tf::transformTFToEigen(transform, Ol_T_Or_);  // NOLINT (readability-identifier-naming)
 
   // Setup publisher for the centering frame.
-  publish_rate_ = franka_hw::TriggerRate(30.0);
-  center_frame_pub_.init(node_handle, "centering_frame", 1, true);
+  publish_rate_ = franka_hw::TriggerRate(100.0);
+  // center_frame_pub_.init(node_handle, "centering_frame", 1, true);
+  leftEE_frame_pub_.init(node_handle, "leftEE_frame", 1, true);
+  rightEE_frame_pub_.init(node_handle, "rightEE_frame", 1, true);
 
   return left_success && right_success;
 }
@@ -222,7 +233,9 @@ void DualArmCartesianImpedanceExampleController::update(const ros::Time& /*time*
     updateArm(arm_data.second);
   }
   if (publish_rate_()) {
-    publishCenteringPose();
+    // publishCenteringPose();
+    publishLeftPose();
+    publishRightPose();
   }
 }
 
@@ -345,7 +358,7 @@ void DualArmCartesianImpedanceExampleController::complianceParamCallback(
   right_arm_data.nullspace_stiffness_target_ = config.right_nullspace_stiffness;
 }
 
-void DualArmCartesianImpedanceExampleController::targetPoseCallback(
+void DualArmCartesianImpedanceExampleController::targetLeftPoseCallback(
     const geometry_msgs::PoseStamped::ConstPtr& msg) {
   try {
     if (msg->header.frame_id != left_arm_id_ + "_link0") {  // NOLINT
@@ -361,7 +374,7 @@ void DualArmCartesianImpedanceExampleController::targetPoseCallback(
     Eigen::Affine3d Ol_T_C{};  // NOLINT (readability-identifier-naming)
     tf::poseMsgToEigen(msg->pose, Ol_T_C);
     Eigen::Affine3d Ol_T_EEl_d =      // NOLINT (readability-identifier-naming)
-        Ol_T_C * EEl_T_C_.inverse();  // NOLINT (readability-identifier-naming)
+        Ol_T_C;//* EEl_T_C_.inverse();  // NOLINT (readability-identifier-naming)
     left_arm_data.position_d_target_ = Ol_T_EEl_d.translation();
     Eigen::Quaterniond last_orientation_d_target(left_arm_data.orientation_d_target_);
     Eigen::Quaterniond new_orientation_target(Ol_T_EEl_d.linear());  // NOLINT
@@ -371,38 +384,65 @@ void DualArmCartesianImpedanceExampleController::targetPoseCallback(
     Ol_T_EEl_d.linear() = new_orientation_target.matrix();
     left_arm_data.orientation_d_target_ = Ol_T_EEl_d.linear();
 
-    // Compute target for the right endeffector given the static desired transform from left to
-    // right endeffector.
-    Eigen::Affine3d Or_T_EEr_d = Ol_T_Or_.inverse()     // NOLINT (readability-identifier-naming)
-                                 * Ol_T_EEl_d *         // NOLINT (readability-identifier-naming)
-                                 EEr_T_EEl_.inverse();  // NOLINT (readability-identifier-naming)
-    auto& right_arm_data = arms_data_.at(right_arm_id_);
-    right_arm_data.position_d_target_ =
-        Or_T_EEr_d.translation();  // NOLINT (readability-identifier-naming)
-    last_orientation_d_target = Eigen::Quaterniond(right_arm_data.orientation_d_target_);
-    right_arm_data.orientation_d_target_ =
-        Or_T_EEr_d.linear();  // NOLINT (readability-identifier-naming)
-    if (last_orientation_d_target.coeffs().dot(right_arm_data.orientation_d_target_.coeffs()) <
-        0.0) {
-      right_arm_data.orientation_d_target_.coeffs()
-          << -right_arm_data.orientation_d_target_.coeffs();
+  } catch (std::out_of_range& ex) {
+    ROS_ERROR_STREAM("DualArmCartesianImpedanceExampleController: Exception setting target poses.");
+  }
+}
+
+void DualArmCartesianImpedanceExampleController::targetRightPoseCallback(
+    const geometry_msgs::PoseStamped::ConstPtr& msg) {
+  try {
+    if (msg->header.frame_id != right_arm_id_ + "_link0") {  // NOLINT
+      ROS_ERROR_STREAM(
+          "DualArmCartesianImpedanceExampleController: Got pose target with invalid"
+          " frame_id "
+          << msg->header.frame_id << ". Expected " << right_arm_id_ + "_link0");
+      return;
     }
+
+    // Set target for the left robot.
+    auto& right_arm_data = arms_data_.at(right_arm_id_);
+    Eigen::Affine3d Or_T_C{};  // NOLINT (readability-identifier-naming)
+    tf::poseMsgToEigen(msg->pose, Or_T_C);
+    Eigen::Affine3d Or_T_EEr_d =      // NOLINT (readability-identifier-naming)
+        Or_T_C;//* EEl_T_C_.inverse();  // NOLINT (readability-identifier-naming)
+    right_arm_data.position_d_target_ = Or_T_EEr_d.translation();
+    Eigen::Quaterniond last_orientation_d_target(right_arm_data.orientation_d_target_);
+    Eigen::Quaterniond new_orientation_target(Or_T_EEr_d.linear());  // NOLINT
+    if (last_orientation_d_target.coeffs().dot(new_orientation_target.coeffs()) < 0.0) {
+      new_orientation_target.coeffs() << -new_orientation_target.coeffs();
+    }
+    Or_T_EEr_d.linear() = new_orientation_target.matrix();
+    right_arm_data.orientation_d_target_ = Or_T_EEr_d.linear();
 
   } catch (std::out_of_range& ex) {
     ROS_ERROR_STREAM("DualArmCartesianImpedanceExampleController: Exception setting target poses.");
   }
 }
 
-void DualArmCartesianImpedanceExampleController::publishCenteringPose() {
-  if (center_frame_pub_.trylock()) {
+void DualArmCartesianImpedanceExampleController::publishLeftPose() {
+  if (leftEE_frame_pub_.trylock()) {
     franka::RobotState robot_state_left =
         arms_data_.at(left_arm_id_).state_handle_->getRobotState();
     Eigen::Affine3d Ol_T_EEl(Eigen::Matrix4d::Map(  // NOLINT (readability-identifier-naming)
         robot_state_left.O_T_EE.data()));           // NOLINT (readability-identifier-naming)
-    Eigen::Affine3d Ol_T_C = Ol_T_EEl * EEl_T_C_;   // NOLINT (readability-identifier-naming)
-    tf::poseEigenToMsg(Ol_T_C, center_frame_pub_.msg_.pose);
-    center_frame_pub_.msg_.header.frame_id = left_arm_id_ + "_link0";
-    center_frame_pub_.unlockAndPublish();
+    Eigen::Affine3d Ol_T_C = Ol_T_EEl;   // NOLINT (readability-identifier-naming)
+    tf::poseEigenToMsg(Ol_T_C, leftEE_frame_pub_.msg_.pose);
+    leftEE_frame_pub_.msg_.header.frame_id = left_arm_id_ + "_link0";
+    leftEE_frame_pub_.unlockAndPublish();
+  }
+}
+
+void DualArmCartesianImpedanceExampleController::publishRightPose() {
+  if (rightEE_frame_pub_.trylock()) {
+    franka::RobotState robot_state_right =
+        arms_data_.at(right_arm_id_).state_handle_->getRobotState();
+    Eigen::Affine3d Or_T_EEr(Eigen::Matrix4d::Map(  // NOLINT (readability-identifier-naming)
+        robot_state_right.O_T_EE.data()));           // NOLINT (readability-identifier-naming)
+    Eigen::Affine3d Or_T_C = Or_T_EEr ;//* EEl_T_C_;   // NOLINT (readability-identifier-naming)
+    tf::poseEigenToMsg(Or_T_C, rightEE_frame_pub_.msg_.pose);
+    rightEE_frame_pub_.msg_.header.frame_id = right_arm_id_ + "_link0";
+    rightEE_frame_pub_.unlockAndPublish();
   }
 }
 
